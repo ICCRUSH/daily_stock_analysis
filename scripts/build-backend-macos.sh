@@ -47,6 +47,9 @@ log "Checking python-multipart availability..."
 log "Checking AlphaSift adapter availability..."
 "${PYTHON_BIN}" -c "import alphasift.dsa_adapter"
 
+log "Checking orjson availability..."
+"${PYTHON_BIN}" -c "import orjson"
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
@@ -92,6 +95,7 @@ hidden_imports=(
   "src.services.alphasift_service"
   "alphasift"
   "alphasift.dsa_adapter"
+  "orjson"
   "uvicorn.logging"
   "uvicorn.loops"
   "uvicorn.loops.auto"
@@ -110,7 +114,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "alphasift")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
@@ -136,76 +140,23 @@ if ! "${packaged_entry}" --help >/tmp/alphasift-packaged-help.log 2>&1; then
   exit 1
 fi
 
-if "${PYTHON_BIN}" -S - <<'PY' "${packaged_root}"
-import pathlib
-import sys
-import zipfile
-import importlib
+for module in alphasift.dsa_adapter orjson; do
+  if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
+    cat /tmp/dsa-packaged-import.log
+  else
+    echo "ERROR: packaged backend artifact cannot import ${module}."
+    cat /tmp/dsa-packaged-import.log
+    exit 1
+  fi
+done
 
-
-def _as_importable_paths(root: pathlib.Path):
-    candidates = [root]
-    internal = root / "_internal"
-    if internal.is_dir():
-        candidates.append(internal)
-
-    for base in candidates:
-        yield base
-        for archive_name in ("*.pyz", "*.zip"):
-            for archive in base.glob(archive_name):
-                yield archive
-
-
-def _can_import_from_candidates(root: pathlib.Path) -> bool:
-    for candidate in _as_importable_paths(root):
-        if not candidate.exists():
-            continue
-
-        baseline_path = list(sys.path)
-        sys.path = [str(candidate)]
-        for key in list(sys.modules):
-            if key == "alphasift" or key.startswith("alphasift."):
-                del sys.modules[key]
-
-        try:
-            importlib.invalidate_caches()
-            importlib.import_module("alphasift.dsa_adapter")
-            print(f"OK (import) from: {candidate}")
-            return True
-        except Exception:
-            continue
-        finally:
-            sys.path = baseline_path
-
-    return False
-
-
-def _zip_contains_alphasift_adapter(root: pathlib.Path) -> bool:
-    for candidate in _as_importable_paths(root):
-        if not candidate.is_file() or candidate.suffix not in {".pyz", ".zip"}:
-            continue
-
-        try:
-            with zipfile.ZipFile(candidate, "r") as zf:
-                for name in zf.namelist():
-                    normalized = name.replace("\\", "/").lstrip("/")
-                    if normalized.startswith("alphasift/dsa_adapter.") or normalized.startswith("alphasift/dsa_adapter/"):
-                        print(f"OK (archive) from: {candidate}")
-                        return True
-        except Exception:
-            continue
-
-    return False
-
-
-root = pathlib.Path(sys.argv[1]).resolve()
-if not _can_import_from_candidates(root) and not _zip_contains_alphasift_adapter(root):
-    raise SystemExit(f"Missing alphasift adapter in packaged artifact: {root}")
-PY
-then
-  echo "Verifying packaged AlphaSift importability..."
-else
-  echo "ERROR: packaged backend artifact is missing alphasift modules in ${packaged_root}."
+log "Verifying packaged AkShare calendar data..."
+packaged_akshare_calendar="${packaged_root}/_internal/akshare/file_fold/calendar.json"
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  packaged_akshare_calendar="${packaged_root}/akshare/file_fold/calendar.json"
+fi
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  echo "ERROR: packaged AkShare calendar data not found under ${packaged_root}."
   exit 1
 fi
 
